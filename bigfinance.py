@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, time, json, csv, random
+import os, time, json, csv, random, sys, logging
 from datetime import datetime
 from urllib.parse import urljoin
 from pathlib import Path
@@ -14,7 +14,10 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 
+# ---------- 기본 설정 ----------
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
 # ---------- 환경설정 ----------
 load_dotenv()
@@ -31,28 +34,42 @@ today = datetime.now().strftime("%Y%m%d")
 CSV_FILE = OUT_DIR / f"industry_categories_{today}.csv"
 OUT_FILE = OUT_DIR / f"industry_categories_{today}_with_meta_companies.csv"
 
-# ---------- Selenium 설정 ----------
+# ---------- Selenium 설정 (EC2 최적화) ----------
 chrome_opts = Options()
 if HEADLESS:
     chrome_opts.add_argument("--headless=new")
-chrome_opts.add_argument("--window-size=1280,850")
-chrome_opts.add_argument("--disable-gpu")
 chrome_opts.add_argument("--no-sandbox")
+chrome_opts.add_argument("--disable-gpu")
+chrome_opts.add_argument("--disable-dev-shm-usage")  # RAM 1GB 한계 대응
+chrome_opts.add_argument("--window-size=1280,850")
+chrome_opts.add_argument("--blink-settings=imagesEnabled=false")  # 이미지 로딩 비활성화
+chrome_opts.add_argument("--disable-extensions")
+chrome_opts.add_argument("--disable-software-rasterizer")
+chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
+chrome_opts.add_argument("--remote-debugging-port=9222")
 
-driver = webdriver.Chrome(service=Service(), options=chrome_opts)
+try:
+    driver = webdriver.Chrome(service=Service(), options=chrome_opts)
+except Exception as e:
+    log.error(f"❌ Chrome 실행 실패: {e}")
+    sys.exit(1)
 
 # ───────────────────────────────
 # 1️⃣ 로그인 & 쿠키 수집
 # ───────────────────────────────
 def selenium_login(driver):
+    log.info("[*] 로그인 시도 중 ...")
     url = urljoin(BASE_URL, LOGIN_PAGE)
     driver.get(url)
     time.sleep(2)
 
     # 기업 사용자 선택
-    enterprise_radio = driver.find_element(By.ID, "enterprise-users")
-    driver.execute_script("arguments[0].click();", enterprise_radio)
-    time.sleep(0.5)
+    try:
+        enterprise_radio = driver.find_element(By.ID, "enterprise-users")
+        driver.execute_script("arguments[0].click();", enterprise_radio)
+        time.sleep(0.5)
+    except Exception:
+        log.warning("⚠️ 기업 사용자 라디오버튼을 찾지 못했습니다. 기본 사용자로 진행합니다.")
 
     # 이메일 / 비밀번호 입력
     id_input = driver.find_element(By.XPATH, "//input[@type='text']")
@@ -66,10 +83,10 @@ def selenium_login(driver):
     time.sleep(3)
 
     cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
-    print("[*] 로그인 완료. 주요 쿠키:")
+    log.info("[*] 로그인 완료. 주요 쿠키:")
     for k in ("XSRF-TOKEN", "SESSION", "account_id", "account_type"):
         if k in cookies:
-            print(f"   {k}={cookies[k][:50]}...")
+            log.info(f"   {k}={cookies[k][:40]}...")
     return cookies
 
 # ───────────────────────────────
@@ -94,12 +111,12 @@ def make_requests_session(cookies):
 # ───────────────────────────────
 def fetch_api(sess, path):
     url = urljoin(BASE_URL, path)
-    resp = sess.get(url, verify=False)
-    print("[*] GET", url, "→", resp.status_code)
+    resp = sess.get(url, verify=False, timeout=30)
+    log.info(f"[*] GET {url} → {resp.status_code}")
     if resp.status_code == 200:
         return resp.json()
     else:
-        print("❌ 실패:", resp.text[:300])
+        log.error(f"❌ API 실패: {resp.text[:200]}")
         return None
 
 # ───────────────────────────────
@@ -137,13 +154,13 @@ def flatten_categories(json_data):
 
 def save_to_csv(rows, out_path):
     if not rows:
-        print("❗ 저장할 데이터가 없습니다.")
+        log.warning("❗ 저장할 데이터가 없습니다.")
         return False
     with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    print(f"✅ 1차 CSV 저장 완료: {out_path} ({len(rows)} rows)")
+    log.info(f"✅ 1차 CSV 저장 완료: {out_path} ({len(rows)} rows)")
     return True
 
 # ───────────────────────────────
@@ -185,7 +202,7 @@ def fetch_companies(sess, main_code, sub_code):
         return [{"code": d.get("companyCode"), "name": d.get("companyName")} for d in data["companies"] if isinstance(d, dict)]
     return []
 
-def enrich_with_meta(sess, csv_path, out_path, max_workers=5):
+def enrich_with_meta(sess, csv_path, out_path, max_workers=4):
     df = pd.read_csv(csv_path)
     for col in ["frequency", "unit", "source", "footnote", "yoyFlag", "updateDate", "companies"]:
         df[col] = None
@@ -207,7 +224,7 @@ def enrich_with_meta(sess, csv_path, out_path, max_workers=5):
             try:
                 fut.result()
             except Exception as e:
-                print("[ERR]", e)
+                log.error(f"[ERR] {e}")
 
     for i, row in df.iterrows():
         key = (row["main_code"], row["sub_code"])
@@ -219,32 +236,36 @@ def enrich_with_meta(sess, csv_path, out_path, max_workers=5):
         df.at[i, "companies"] = json.dumps(comps, ensure_ascii=False)
 
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    print(f"✅ 최종 CSV 저장 완료: {out_path} (총 {len(df)}행)")
+    log.info(f"✅ 최종 CSV 저장 완료: {out_path} (총 {len(df)}행)")
 
 # ───────────────────────────────
-# 6️⃣ 메인
+# 6️⃣ 메인 실행
 # ───────────────────────────────
 def main():
     try:
-        print("[*] 로그인 중...")
+        log.info("[*] BigFinance 로그인 중 ...")
         cookies = selenium_login(driver)
         sess = make_requests_session(cookies)
 
-        print("[*] 산업 카테고리 데이터 수집 중...")
+        log.info("[*] 산업 카테고리 데이터 수집 중 ...")
         data = fetch_api(sess, API_PATH)
         if not data:
-            print("❌ API 응답 없음. 종료합니다.")
-            return
+            log.error("❌ API 응답 없음. 종료합니다.")
+            sys.exit(1)
 
         rows = flatten_categories(data)
         if not save_to_csv(rows, CSV_FILE):
-            return
+            sys.exit(1)
 
-        print("[*] header + companies 병합 중...")
-        enrich_with_meta(sess, CSV_FILE, OUT_FILE, max_workers=5)
+        log.info("[*] header + companies 병합 중 ...")
+        enrich_with_meta(sess, CSV_FILE, OUT_FILE, max_workers=4)
 
+    except Exception as e:
+        log.exception(f"❌ 실행 중 오류 발생: {e}")
+        sys.exit(1)
     finally:
         driver.quit()
+        log.info("[*] Chrome 세션 종료 완료")
 
 if __name__ == "__main__":
     main()
