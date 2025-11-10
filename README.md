@@ -21,11 +21,11 @@ trendasset/
 ├── bigfinance.py        # BigFinance 산업데이터 수집기
 ├── bigrise_pre.py       # ETF-산업 매칭 스크립트
 ├── .env                 # BigFinance 로그인정보
-└── out/
+└── out/                 # Rise + BigFinance 매칭 결과
     ├── naver/           # 뉴스 CSV 결과
     ├── riseETF/         # ETF 목록/구성 결과
-    ├── bigfinance/      # 산업데이터 결과
-    └── bigrise/         # 매칭 결과
+    └── bigfinance/      # 산업데이터 결과
+    
 ```
 
 ---
@@ -127,6 +127,43 @@ python bigrise_pre.py
 
 ---
 
+## 🔐 .env 설정
+
+BigFinance 로그인을 위한 계정 정보를 `.env` 파일에 저장해야 합니다.  
+예시는 `.env_sample`을 참고하세요.
+
+### 📄 `.env_sample`
+
+```bash
+# ---------------------------
+# BigFinance 로그인 설정
+# ---------------------------
+BASE_URL=https://bigfinance.co.kr
+LOGIN_PAGE=/login
+USERNAME=your_email@example.com
+PASSWORD=your_password
+
+# ---------------------------
+# 실행 옵션
+# ---------------------------
+# true → 브라우저 창을 띄우지 않음 (headless mode)
+# false → 브라우저 창을 표시
+HEADLESS=true
+WINDOW_SIZE=1280,850
+```
+
+### ⚙️ 사용법
+
+1. 루트 폴더(`trendasset/`)에 `.env` 파일 생성  
+2. 위 내용을 복사하여 실제 계정 정보로 교체  
+3. 스크립트 실행 시 `dotenv`가 자동으로 환경변수를 로드함
+
+```bash
+python bigfinance.py
+```
+
+---
+
 ## 🧰 필요 패키지
 
 ```bash
@@ -153,6 +190,6 @@ out/
 ---
 
 ## 👤 Author
- 
+
 - **Maintainer:** Kayser So  
 - **GitHub:** [dorumugs/trendasset](https://github.com/dorumugs/trendasset)
