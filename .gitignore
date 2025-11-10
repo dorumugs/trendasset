@@ -207,22 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # 1. 기본적으로 out 전체 무시
-/out/*
-
-# 2. out 폴더는 남겨둠
-!/out/
-
-# 3. 현재 있는 폴더 구조는 남김
-!/out/bigfinance/
-!/out/naver/
-!/out/riseETF/
-
-# 4. 현재 파일만 추적 (명시적으로 예외 지정)
-!/out/bigfinance/industry_categories_20251107.csv
-!/out/bigfinance/industry_categories_20251107_with_meta_companies.csv
-!/out/naver/naver_news_20251106.csv
-!/out/naver/naver_news_20251106_with_contents.csv
-!/out/riseETF/rise_finder_20251107.csv
-!/out/riseETF/rise_finder_20251107_with_holdings.csv
-!/out/riseETF/rise_finder_20251107_with_holdings_flattened.csv
-!/out/riseETF/bigrise_20251107.csv
+/out/
+/out/bigfinance/
+/out/naver/
+/out/riseETF/
