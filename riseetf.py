@@ -8,6 +8,9 @@ from tqdm import tqdm
 import requests
 from bs4 import BeautifulSoup
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 BASE = "https://riseetf.co.kr"
 URL = f"{BASE}/prod/finder"
 
@@ -26,7 +29,7 @@ HEADERS = {
 # -----------------------------
 def scrape_rise_finder():
     session = requests.Session()
-    r = session.get(URL, headers=HEADERS, timeout=20)
+    r = session.get(URL, headers=HEADERS, timeout=20, verify=False)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -79,7 +82,7 @@ def fetch_holdings(detail_url: str):
     """상세 페이지의 tab3 구성내역을 리스트[dict]로 반환"""
     url = detail_url if "?" in detail_url else detail_url + "?searchFlag=viewtab3"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
         r.raise_for_status()
     except Exception as e:
         return []

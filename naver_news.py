@@ -315,7 +315,7 @@ def cleanup_html_dump(dump_dir: str = "html_dump", backup: bool = False) -> None
 # 메인 실행
 # -----------------------------
 if __name__ == "__main__":
-    target_date = "20251106"
+    target_date = "20251110"
     sections = [401, 402, 403, 404, 406, 429]
 
     save_all_with_sleep_multi(target_date, sections)

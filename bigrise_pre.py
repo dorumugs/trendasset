@@ -4,11 +4,12 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ---------- 경로 설정 ----------
+date_str= "20251110"
 BASE_DIR = Path(__file__).resolve().parent
 OUT_DIR = BASE_DIR / "out"
-RISE_PATH = OUT_DIR / "riseETF" / "rise_finder_20251107_with_holdings_flattened.csv"
-INDUSTRY_PATH = OUT_DIR / "bigfinance" / "industry_categories_20251107_with_meta_companies.csv"
-OUTPUT_PATH = OUT_DIR / "bigrise_20251107.csv"
+RISE_PATH = OUT_DIR / "riseETF" / f"rise_finder_{date_str}_with_holdings_flattened.csv"
+INDUSTRY_PATH = OUT_DIR / "bigfinance" / f"industry_categories_{date_str}_with_meta_companies.csv"
+OUTPUT_PATH = OUT_DIR / f"bigrise_{date_str}.csv"
 
 # ---------- CSV 로드 ----------
 rise_df = pd.read_csv(RISE_PATH)
