@@ -1,7 +1,9 @@
 # 🧭 TrendAsset: Automated Financial Data Pipeline
 
-**TrendAsset**은 금융시장 데이터(ETF 구성, 산업별 메타정보, 뉴스)를 자동 수집·가공하는 **Prefect 기반 데이터 파이프라인 프로젝트**입니다.  
-Naver Finance, BigFinance, Rise ETF 데이터를 정기적으로 수집하고 CSV로 집계합니다.
+**TrendAsset**은 금융시장 데이터(ETF 구성, 산업별 메타정보, 뉴스)를  자동 수집·가공하는   
+**Prefect 기반 데이터 파이프라인 프로젝트**입니다.  
+
+- Naver Finance, BigFinance, Rise ETF 데이터를 정기적으로 수집하고 CSV로 집계합니다.
 
 ---
 
