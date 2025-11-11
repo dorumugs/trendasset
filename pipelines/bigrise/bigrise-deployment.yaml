@@ -1,0 +1,25 @@
+# prefect.yaml
+name: trendasset
+prefect-version: 3.6.0
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: .
+
+deployments:
+  - name: Bigrise Daily
+    entrypoint: pipelines/bigrise/bigrise.py:bigrise_pipeline
+    description: |
+      BigRise 종합 파이프라인
+      - 08:00 Naver 뉴스 수집
+      - 08:10 RISE ETF 크롤링
+      - 08:20 BigFinance 산업데이터 수집
+      - 08:30 ETF–산업 매칭
+    work_pool:
+      name: default
+      work_queue_name: default
+      job_variables: {}
+    schedules:
+      - cron: "0 8 * * *"
+        timezone: "Asia/Seoul"
+        active: true

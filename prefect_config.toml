@@ -1,0 +1,22 @@
+# project-root/prefect_config.toml
+[logging]
+level = "INFO"
+formatter = "%(asctime)s [%(levelname)s] %(message)s"
+log_directory = "./logs"
+
+[server]
+host = "127.0.0.1"
+port = 4200
+
+[deployments]
+default_tags = ["bigrise", "automation"]
+default_queue = "default"
+
+[flows]
+retries = 1
+retry_delay_seconds = 60
+checkpointing = true
+
+[orion]
+ui_enabled = true
+database_url = "sqlite+aiosqlite:///prefect.db"

@@ -1,195 +1,240 @@
-# 🧠 trendasset
+# 🧭 TrendAsset: Automated Financial Data Pipeline (Updated)
 
-**ETF · 산업데이터 · 뉴스 자동수집 및 매칭 파이프라인**
-
-`trendasset`은  
-
-- **네이버 금융 뉴스**,  
-- **RISE ETF 구성내역**,  
-- **BigFinance 산업 데이터**를  
-  자동으로 수집하고 상호 매칭하여  
-  **ETF-산업-기업 연계 데이터셋을 구축**하는 프로젝트입니다.
+**TrendAsset**은 금융시장 데이터(ETF 구성, 산업별 메타정보, 뉴스)를 자동 수집·가공하는 **Prefect 기반 데이터 파이프라인 프로젝트**입니다.  
+Naver Finance, BigFinance, Rise ETF 데이터를 정기적으로 수집하고 CSV로 집계합니다.
 
 ---
 
-## 📁 디렉토리 구조
+## 📦 1. 프로젝트 개요
+
+| 구분          | 내용                                                         |
+| ------------- | ------------------------------------------------------------ |
+| **목적**      | 금융시장 관련 뉴스·산업·ETF 데이터를 자동 수집 및 가공       |
+| **핵심 기술** | Python · BeautifulSoup · Requests · Prefect · ThreadPoolExecutor |
+| **출력 형식** | CSV (UTF-8)                                                  |
+| **출력 경로** | `./out/`                                                     |
+| **로그 경로** | `./logs/`                                                    |
+
+---
+
+## ⚙️ 2. 파이프라인 구성
+
+### 🧩 (1) BigRise Main Pipeline
+
+- **파일:** `pipelines/bigrise/bigrise.py`
+- **기능:**  
+  - 전체 데이터 파이프라인을 Prefect Flow로 통합 실행  
+  - Naver 뉴스 → Rise ETF → BigFinance 순서로 병렬·직렬 조합  
+  - Prefect 스케줄러 기반 자동화 배치 지원  
+  - 기준일(`target_date`)은 Flow Run 시간 기준 전일로 자동 계산  
+
+---
+
+### 💹 (2) Rise ETF Pipeline
+
+- **파일:** `pipelines/bigrise/riseetf.py`
+
+- **기능:**  
+
+  - RISE ETF Finder 페이지에서 ETF 목록 및 보유종목 크롤링  
+  - 보유내역 JSON → 평탄화(`flatten`) 후 CSV 저장  
+  - Prefect Task 및 tqdm 기반 병렬 수집  
+
+- **출력 파일 구조**
+
+  ```
+  out/riseETF/
+  ├── rise_finder_YYYYMMDD.csv
+  ├── rise_finder_YYYYMMDD_with_holdings.csv
+  └── rise_finder_YYYYMMDD_with_holdings_flattened.csv
+  ```
+
+- **CSV 스키마 예시**
+
+  | 컬럼명         | 설명                          |
+  | -------------- | ----------------------------- |
+  | `etf_name`     | ETF 이름                      |
+  | `etf_code`     | ETF 코드                      |
+  | `category`     | ETF 유형                      |
+  | `provider`     | 운용사                        |
+  | `num_holdings` | 보유 종목 수                  |
+  | `as_of`        | 기준일                        |
+  | `holding_name` | 보유 종목명                   |
+  | `holding_code` | 종목 코드                     |
+  | `weight`       | 비중(%)                       |
+  | `market`       | 시장 구분 (KOSPI / NASDAQ 등) |
+
+---
+
+### 📰 (3) Naver Finance News Pipeline
+
+- **파일:** `pipelines/bigrise/naver_news.py`
+
+- **기능:**  
+
+  - 네이버 금융 뉴스(섹션: 시황, 기업, 해외, 채권, 공시, 환율) 크롤링  
+  - HTML 저장 → CSV 집계 → 기사 본문(`contents`) 추가  
+  - ThreadPoolExecutor + tqdm으로 병렬 수집 및 로깅  
+
+- **출력 파일 구조**
+
+  ```
+  out/naver/
+  ├── naver_news_YYYYMMDD.csv
+  └── naver_news_YYYYMMDD_with_contents.csv
+  ```
+
+- **CSV 스키마 예시**
+
+  | 컬럼명     | 설명                                      |
+  | ---------- | ----------------------------------------- |
+  | `title`    | 뉴스 제목                                 |
+  | `summary`  | 요약문                                    |
+  | `url`      | 기사 URL                                  |
+  | `press`    | 언론사                                    |
+  | `date`     | 게시일 (YYYY-MM-DD)                       |
+  | `section`  | 뉴스 섹션 (시황/기업/해외 등)             |
+  | `contents` | 기사 본문 텍스트 (본문 수집 완료 시 추가) |
+
+---
+
+### 🧮 (4) BigFinance Industry Pipeline
+
+- **파일:** `pipelines/bigrise/bigfinance.py`
+
+- **기능:**  
+
+  - BigFinance API(`/api/industry/categories`) 호출로 산업·기업 메타정보 수집  
+  - `frequency`, `source`, `companies` 등 메타 필드 포함  
+  - RISE ETF 산업 매칭 로직과 연계 가능  
+
+- **출력 파일 구조**
+
+  ```
+  out/bigfinance/
+  ├── industry_categories_YYYYMMDD.csv
+  └── industry_categories_YYYYMMDD_with_meta_companies.csv
+  ```
+
+- **CSV 스키마 예시**
+
+  | 컬럼명          | 설명                          |
+  | --------------- | ----------------------------- |
+  | `main_name`     | 산업 대분류                   |
+  | `sub_name`      | 산업 소분류                   |
+  | `data_name`     | 데이터 항목명                 |
+  | `frequency`     | 데이터 주기 (월/분기/연간 등) |
+  | `source`        | 데이터 출처                   |
+  | `companies`     | 산업에 속한 기업명 리스트     |
+  | `category_code` | 카테고리 코드 (API 반환값)    |
+  | `last_updated`  | 데이터 기준일                 |
+
+---
+
+### 🧰 (5) 공통 유틸 및 배포
+
+| 파일                        | 설명                                               |
+| --------------------------- | -------------------------------------------------- |
+| `pipelines/common/tasks.py` | Prefect Task 공통 정의 (`run_script`, `notify` 등) |
+| `pipelines/deploy_all.py`   | 모든 Flow를 Prefect에 자동 등록 및 배포            |
+
+---
+
+## 🧱 3. 디렉토리 구조
 
 ```
 trendasset/
-├── naver_news.py        # 네이버 금융 뉴스 크롤러
-├── riseetf.py           # RISE ETF 구성내역 크롤러
-├── bigfinance.py        # BigFinance 산업데이터 수집기
-├── bigrise_pre.py       # ETF-산업 매칭 스크립트
-├── .env                 # BigFinance 로그인정보
-└── out/                 # Rise + BigFinance 매칭 결과
-    ├── naver/           # 뉴스 CSV 결과
-    ├── riseETF/         # ETF 목록/구성 결과
-    └── bigfinance/      # 산업데이터 결과
-    
+├── pipelines/
+│   ├── bigrise/
+│   │   ├── bigrise_pre.py
+│   │   ├── bigrise.py
+│   │   ├── riseetf.py
+│   │   ├── bigfinance.py
+│   │   └── naver_news.py
+│   ├── common/
+│   │   └── tasks.py
+│   └── deploy_all.py
+├── out/
+│   ├── riseETF/
+│   ├── naver/
+│   └── bigfinance/
+├── logs/
+│   ├── bigrise_YYYYMMDD.log
+│   ├── bigfinance_YYYYMMDD.log
+│   └── naver_news_YYYYMMDD.log
+├── out_sample/
+├── prefect.yaml
+├── prefect_config.toml
+├── .env_sample
+└── README.md
 ```
 
 ---
 
-## ⚙️ 주요 기능 요약
+## ⚡ 4. 실행 및 배포
 
-| 모듈                 | 기능                                                  | 출력 파일                                                    |
-| -------------------- | ----------------------------------------------------- | ------------------------------------------------------------ |
-| **`naver_news.py`**  | 네이버 금융뉴스 HTML → CSV + 기사 본문 추가           | `out/naver/naver_news_YYYYMMDD_with_contents.csv`            |
-| **`riseetf.py`**     | RISE ETF 전체 목록 + 구성종목(tab3) + flatten         | `out/riseETF/rise_finder_YYYYMMDD_with_holdings_flattened.csv` |
-| **`bigfinance.py`**  | BigFinance 산업 카테고리 + 메타정보 + 기업리스트 수집 | `out/bigfinance/industry_categories_YYYYMMDD_with_meta_companies.csv` |
-| **`bigrise_pre.py`** | ETF 구성종목 ↔ 산업 기업명 매칭 후 메타 병합          | `out/bigrise_YYYYMMDD.csv`                                   |
-
----
-
-## 🪄 실행 순서
+### (1) 환경 설정
 
 ```bash
-# 1. 네이버 뉴스 수집
-python naver_news.py
-
-# 2. RISE ETF 데이터 수집
-python riseetf.py
-
-# 3. BigFinance 산업 데이터 수집
-python bigfinance.py
-
-# 4. ETF-산업 매칭
-python bigrise_pre.py
+cp .env_sample .env
+# .env 내부에 계정 정보 및 BASE_URL 입력
 ```
 
----
-
-## 🧾 결과 파일별 컬럼 설명
-
-### 📰 `naver_news_YYYYMMDD_with_contents.csv`
-
-| 컬럼           | 설명                                              |
-| -------------- | ------------------------------------------------- |
-| `section_name` | 뉴스 섹션 이름 (시황·기업·해외·채권·공시·환율 등) |
-| `section_id3`  | 네이버 금융 3단계 섹션 코드                       |
-| `office_id`    | 언론사 ID                                         |
-| `article_id`   | 기사 ID                                           |
-| `url`          | 뉴스 원문 URL                                     |
-| `title`        | 기사 제목                                         |
-| `press`        | 언론사 이름                                       |
-| `wdate`        | 게재일시                                          |
-| `source_file`  | HTML 원본 파일명                                  |
-| `contents`     | 기사 본문 텍스트                                  |
-
----
-
-### 💹 `rise_finder_YYYYMMDD_with_holdings_flattened.csv`
-
-| 컬럼         | 설명                 |
-| ------------ | -------------------- |
-| `name`       | ETF 이름             |
-| `price`      | 현재가               |
-| `change`     | 전일 대비 변동 (▲/▼) |
-| `detail_url` | ETF 상세 페이지 URL  |
-| `number`     | 구성내역 순번        |
-| `item_name`  | 구성종목명           |
-| `item_code`  | 종목코드             |
-| `base_price` | 기준가               |
-| `ratio`      | 비중(%)              |
-| `value`      | 평가액               |
-
----
-
-### 🏭 `industry_categories_YYYYMMDD_with_meta_companies.csv`
-
-| 컬럼                     | 설명                                     |
-| ------------------------ | ---------------------------------------- |
-| `main_code`, `main_name` | 산업 대분류 코드 및 이름                 |
-| `group_id`, `group_name` | 산업 그룹 ID 및 이름                     |
-| `sub_code`, `sub_name`   | 산업 세부분류 코드 및 이름               |
-| `update_date`            | 업데이트 일자                            |
-| `data_type`              | 데이터 타입 (예: 시계열/통계 등)         |
-| `data_code`, `data_name` | 데이터 세부코드 및 이름                  |
-| `last_update`            | 최종 갱신일                              |
-| `frequency`              | 데이터 갱신주기 (월, 분기 등)            |
-| `unit`                   | 단위 (예: %, 억원 등)                    |
-| `source`                 | 데이터 출처                              |
-| `footnote`               | 각주/비고                                |
-| `yoyFlag`                | 전년대비 여부 플래그                     |
-| `updateDate`             | 헤더 정보 기준 업데이트일                |
-| `companies`              | 산업에 속한 기업 리스트 (JSON 배열 형식) |
-
----
-
-### 🔗 `bigrise_YYYYMMDD.csv`
-
-| 컬럼                                                         | 설명                                        |
-| ------------------------------------------------------------ | ------------------------------------------- |
-| (이전 동일) `name`, `price`, `change`, `detail_url`, `number`, `item_name`, `item_code`, `base_price`, `ratio`, `value` | ETF 기본 및 구성정보                        |
-| `industry_info`                                              | 매칭된 산업정보 (`sub_name-data_name` 형식) |
-| `industry_frequency`                                         | 해당 산업데이터의 갱신주기                  |
-| `industry_source`                                            | 데이터 출처 (예: 통계청, 산업통상자원부 등) |
-
----
-
-## 🔐 .env 설정
-
-BigFinance 로그인을 위한 계정 정보를 `.env` 파일에 저장해야 합니다.  
-예시는 `.env_sample`을 참고하세요.
-
-### 📄 `.env_sample`
+### (2) Prefect 서버 실행
 
 ```bash
-# ---------------------------
-# BigFinance 로그인 설정
-# ---------------------------
-BASE_URL=https://bigfinance.co.kr
-LOGIN_PAGE=/login
-USERNAME=your_email@example.com
-PASSWORD=your_password
-
-# ---------------------------
-# 실행 옵션
-# ---------------------------
-# true → 브라우저 창을 띄우지 않음 (headless mode)
-# false → 브라우저 창을 표시
-HEADLESS=true
-WINDOW_SIZE=1280,850
+prefect server start
 ```
 
-### ⚙️ 사용법
-
-1. 루트 폴더(`trendasset/`)에 `.env` 파일 생성  
-2. 위 내용을 복사하여 실제 계정 정보로 교체  
-3. 스크립트 실행 시 `dotenv`가 자동으로 환경변수를 로드함
+### (3) 워커 등록
 
 ```bash
-python bigfinance.py
+prefect work-pool create default
+prefect worker start --pool default
 ```
 
----
-
-## 🧰 필요 패키지
+### (4) 파이프라인 배포
 
 ```bash
-pip install requests beautifulsoup4 lxml tqdm pandas selenium python-dotenv
+python pipelines/deploy_all.py
 ```
 
-> **주의:**  
->
-> - ChromeDriver 설치 필요  
-> - `.env` 파일에 BigFinance 로그인 정보 저장 필요  
+### (5) 개별 Flow 실행
 
----
-
-## 📊 예시 출력 경로
-
-```
-out/
-├── naver/naver_news_20251106_with_contents.csv
-├── riseETF/rise_finder_20251107_with_holdings_flattened.csv
-├── bigfinance/industry_categories_20251107_with_meta_companies.csv
-└── bigrise_20251107.csv
+```bash
+prefect deployment run "BigRise Pipeline"
 ```
 
 ---
 
-## 👤 Author
+## 🧩 5. 환경 변수(.env_sample)
 
-- **Maintainer:** Kayser So  
-- **GitHub:** [dorumugs/trendasset](https://github.com/dorumugs/trendasset)
+| 변수명       | 설명                   | 예시                       |
+| ------------ | ---------------------- | -------------------------- |
+| `BASE_URL`   | BigFinance API 주소    | `https://bigfinance.co.kr` |
+| `LOGIN_PAGE` | 로그인 페이지 경로     | `/login`                   |
+| `USERNAME`   | 계정 아이디            | `user@example.com`         |
+| `PASSWORD`   | 계정 비밀번호          | `yourpassword`             |
+| `HEADLESS`   | Selenium 헤드리스 여부 | `true`                     |
+
+---
+
+## 📊 6. 출력 데이터 스키마 요약
+
+| 경로              | 설명                         | 주요 컬럼                        |
+| ----------------- | ---------------------------- | -------------------------------- |
+| `out/riseETF/`    | RISE ETF 리스트 및 구성 종목 | etf_name · holding_name · weight |
+| `out/bigfinance/` | 산업 메타데이터              | main_name · sub_name · companies |
+| `out/naver/`      | 뉴스 기사 데이터             | title · press · contents         |
+
+---
+
+## 📑 7. 라이선스
+
+이 프로젝트는 [Apache License 2.0](./LICENSE)을 따릅니다.
+
+---
+
+> 📌 **최종 업데이트:** 2025-11-11  
+> 🧠 **Maintainer:** PearlCow  
+> 💬 **문의:** dorumugs@gmail.com

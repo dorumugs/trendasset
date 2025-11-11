@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+BigFinance 산업 카테고리 크롤러 (Prefect 파이프라인 대응 버전)
+------------------------------------------------
+- 로그인 → API 호출 → JSON 평탄화 → header/companies 병합
+- 경로 구조: project-root/out/bigfinance/, project-root/logs/
+- 제어: .env 파일에서 KEEP_TEMP=true 설정 시 중간 CSV 보존
+"""
+
 import os, time, json, csv, random, sys, logging
 from datetime import datetime
 from urllib.parse import urljoin
@@ -14,35 +23,59 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 
-# ---------- 기본 설정 ----------
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# =====================================================
+# 경로 설정 (Prefect 환경 호환)
+# =====================================================
+BASE_DIR = Path(__file__).resolve().parents[2]
+OUT_DIR = BASE_DIR / "out" / "bigfinance"
+LOG_DIR = BASE_DIR / "logs"
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+today = datetime.now().strftime("%Y%m%d")
+CSV_FILE = OUT_DIR / f"industry_categories_{today}.csv"
+OUT_FILE = OUT_DIR / f"industry_categories_{today}_with_meta_companies.csv"
+
+# =====================================================
+# 로깅 설정
+# =====================================================
+log_path = LOG_DIR / f"bigfinance_{today}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(log_path, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
 log = logging.getLogger(__name__)
 
-# ---------- 환경설정 ----------
+# =====================================================
+# 기본 설정
+# =====================================================
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
+
 BASE_URL = os.getenv("BASE_URL", "https://bigfinance.co.kr").rstrip("/")
 LOGIN_PAGE = os.getenv("LOGIN_PAGE", "/login")
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 HEADLESS = os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes")
+KEEP_TEMP = os.getenv("KEEP_TEMP", "false").lower() in ("1", "true", "yes")
 API_PATH = "/api/industry/categories"
-OUT_DIR = Path("./out/bigfinance")
 
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-today = datetime.now().strftime("%Y%m%d")
-CSV_FILE = OUT_DIR / f"industry_categories_{today}.csv"
-OUT_FILE = OUT_DIR / f"industry_categories_{today}_with_meta_companies.csv"
-
-# ---------- Selenium 설정 (EC2 최적화) ----------
+# =====================================================
+# Selenium 설정
+# =====================================================
 chrome_opts = Options()
 if HEADLESS:
     chrome_opts.add_argument("--headless=new")
 chrome_opts.add_argument("--no-sandbox")
 chrome_opts.add_argument("--disable-gpu")
-chrome_opts.add_argument("--disable-dev-shm-usage")  # RAM 1GB 한계 대응
+chrome_opts.add_argument("--disable-dev-shm-usage")
 chrome_opts.add_argument("--window-size=1280,850")
-chrome_opts.add_argument("--blink-settings=imagesEnabled=false")  # 이미지 로딩 비활성화
+chrome_opts.add_argument("--blink-settings=imagesEnabled=false")
 chrome_opts.add_argument("--disable-extensions")
 chrome_opts.add_argument("--disable-software-rasterizer")
 chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -54,16 +87,15 @@ except Exception as e:
     log.error(f"❌ Chrome 실행 실패: {e}")
     sys.exit(1)
 
-# ───────────────────────────────
+# =====================================================
 # 1️⃣ 로그인 & 쿠키 수집
-# ───────────────────────────────
+# =====================================================
 def selenium_login(driver):
     log.info("[*] 로그인 시도 중 ...")
     url = urljoin(BASE_URL, LOGIN_PAGE)
     driver.get(url)
     time.sleep(2)
 
-    # 기업 사용자 선택
     try:
         enterprise_radio = driver.find_element(By.ID, "enterprise-users")
         driver.execute_script("arguments[0].click();", enterprise_radio)
@@ -71,13 +103,13 @@ def selenium_login(driver):
     except Exception:
         log.warning("⚠️ 기업 사용자 라디오버튼을 찾지 못했습니다. 기본 사용자로 진행합니다.")
 
-    # 이메일 / 비밀번호 입력
     id_input = driver.find_element(By.XPATH, "//input[@type='text']")
     pw_input = driver.find_element(By.XPATH, "//input[@type='password']")
-    id_input.clear(); id_input.send_keys(USERNAME)
-    pw_input.clear(); pw_input.send_keys(PASSWORD)
+    id_input.clear()
+    id_input.send_keys(USERNAME)
+    pw_input.clear()
+    pw_input.send_keys(PASSWORD)
 
-    # 로그인 버튼 클릭
     login_btn = driver.find_element(By.XPATH, "//button[contains(text(),'로그인')]")
     driver.execute_script("arguments[0].click();", login_btn)
     time.sleep(3)
@@ -89,9 +121,9 @@ def selenium_login(driver):
             log.info(f"   {k}={cookies[k][:40]}...")
     return cookies
 
-# ───────────────────────────────
-# 2️⃣ requests.Session() 생성
-# ───────────────────────────────
+# =====================================================
+# 2️⃣ Session 생성
+# =====================================================
 def make_requests_session(cookies):
     sess = requests.Session()
     xsrf = cookies.get("XSRF-TOKEN")
@@ -106,9 +138,9 @@ def make_requests_session(cookies):
         sess.cookies.set(name, value, domain="bigfinance.co.kr", path="/")
     return sess
 
-# ───────────────────────────────
-# 3️⃣ /api/industry/categories 호출
-# ───────────────────────────────
+# =====================================================
+# 3️⃣ API 호출
+# =====================================================
 def fetch_api(sess, path):
     url = urljoin(BASE_URL, path)
     resp = sess.get(url, verify=False, timeout=30)
@@ -119,9 +151,9 @@ def fetch_api(sess, path):
         log.error(f"❌ API 실패: {resp.text[:200]}")
         return None
 
-# ───────────────────────────────
-# 4️⃣ JSON 평탄화 & 1차 CSV 저장
-# ───────────────────────────────
+# =====================================================
+# 4️⃣ JSON 평탄화
+# =====================================================
 def flatten_categories(json_data):
     rows = []
     categories = json_data.get("categories", [])
@@ -163,9 +195,9 @@ def save_to_csv(rows, out_path):
     log.info(f"✅ 1차 CSV 저장 완료: {out_path} ({len(rows)} rows)")
     return True
 
-# ───────────────────────────────
+# =====================================================
 # 5️⃣ header + companies 병합
-# ───────────────────────────────
+# =====================================================
 def safe_get_json(sess, url, retries=3, timeout=(5,25)):
     for attempt in range(retries):
         try:
@@ -238,9 +270,9 @@ def enrich_with_meta(sess, csv_path, out_path, max_workers=4):
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     log.info(f"✅ 최종 CSV 저장 완료: {out_path} (총 {len(df)}행)")
 
-# ───────────────────────────────
+# =====================================================
 # 6️⃣ 메인 실행
-# ───────────────────────────────
+# =====================================================
 def main():
     try:
         log.info("[*] BigFinance 로그인 중 ...")
@@ -259,6 +291,13 @@ def main():
 
         log.info("[*] header + companies 병합 중 ...")
         enrich_with_meta(sess, CSV_FILE, OUT_FILE, max_workers=4)
+
+        if KEEP_TEMP:
+            log.info(f"🗂 중간 파일 보존 (.env KEEP_TEMP=true): {CSV_FILE.name}")
+        else:
+            if CSV_FILE.exists():
+                CSV_FILE.unlink()
+                log.info(f"🧹 중간 파일 삭제 완료: {CSV_FILE.name}")
 
     except Exception as e:
         log.exception(f"❌ 실행 중 오류 발생: {e}")
