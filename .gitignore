@@ -211,3 +211,7 @@ __marimo__/
 /out/bigfinance/
 /out/naver/
 /out/riseETF/
+
+# macOS 시스템 파일
+.DS_Store
+*/.DS_Store
