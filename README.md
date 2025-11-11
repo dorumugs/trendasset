@@ -7,6 +7,47 @@
 
 ---
 
+## 🧰 필요 패키지
+
+```bash
+pip install requests beautifulsoup4 lxml tqdm pandas selenium python-dotenv
+```
+
+> **주의:**  
+>
+> - ChromeDriver 설치 필요  
+> - `.env` 파일에 BigFinance 로그인 정보 저장 필요  
+
+## 디렉토리 구조
+
+```
+trendasset/
+├── logs/
+├── out/
+├── out_sample/
+├── pipelines/
+│   ├── bigrise/
+│   │   ├── bigfinance.py
+│   │   ├── bigrise.py
+│   │   ├── bigrise_pre.py
+│   │   ├── naver_news.py
+│   │   └── riseetf.py
+│   ├── common/
+│   │   └── tasks.py
+│   └── deploy_all.py
+├── .env
+├── .env_sample
+├── .gitignore
+├── .prefectignore
+├── LICENSE
+├── prefect_config.toml
+├── prefect.yaml
+└── README.md
+```
+
+---
+
+
 ## 📦 1. 프로젝트 개요
 
 | 구분          | 내용                                                         |
