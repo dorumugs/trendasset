@@ -3,9 +3,16 @@
 """
 BigFinance 산업 카테고리 크롤러 (Prefect 파이프라인 대응 버전)
 ------------------------------------------------
-- 로그인 → API 호출 → JSON 평탄화 → header/companies 병합
-- 경로 구조: project-root/out/bigfinance/, project-root/logs/
-- 제어: .env 파일에서 KEEP_TEMP=true 설정 시 중간 CSV 보존
+- 로그인 → 산업 카테고리 수집 → 평탄화 CSV 생성
+- header + companies 병합
+- chart 데이터 JSON 저장
+- chart 메타 저장: out/bigfinance/chart/chart_manifest.json + chart_index.csv
+
+chart 저장 구조:
+out/bigfinance/{data_type}/{main_code}/{group_id}/{sub_code}/{data_code}-{sub_name}-{data_name}.json
+
+chart_index.csv 의 file_path 는 반드시 아래 형태:
+./out/bigfinance/chart/0/2/1/2-글로벌_자동차_판매_국가별_(월)-USA.json
 """
 
 import os, time, json, csv, random, sys, logging
@@ -23,50 +30,55 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 
+
 # =====================================================
-# 경로 설정 (Prefect 환경 호환)
+# 경로 설정
 # =====================================================
 BASE_DIR = Path(__file__).resolve().parents[2]
 OUT_DIR = BASE_DIR / "out" / "bigfinance"
 LOG_DIR = BASE_DIR / "logs"
+CHART_META_DIR = OUT_DIR / "chart"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+CHART_META_DIR.mkdir(parents=True, exist_ok=True)
 
 today = datetime.now().strftime("%Y%m%d")
 CSV_FILE = OUT_DIR / f"industry_categories_{today}.csv"
 OUT_FILE = OUT_DIR / f"industry_categories_{today}_with_meta_companies.csv"
 
+
 # =====================================================
-# 로깅 설정
+# 로깅
 # =====================================================
 log_path = LOG_DIR / f"bigfinance_{today}.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(log_path, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=[logging.FileHandler(log_path, encoding="utf-8"),
+              logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger(__name__)
 
+
 # =====================================================
-# 기본 설정
+# ENV 설정
 # =====================================================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
 
 BASE_URL = os.getenv("BASE_URL", "https://bigfinance.co.kr").rstrip("/")
-LOGIN_PAGE = os.getenv("LOGIN_PAGE", "/login")
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
+LOGIN_PAGE = os.getenv("LOGIN_PAGE", "/login")
 HEADLESS = os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes")
 KEEP_TEMP = os.getenv("KEEP_TEMP", "false").lower() in ("1", "true", "yes")
+
 API_PATH = "/api/industry/categories"
 
+
 # =====================================================
-# Selenium 설정
+# Selenium
 # =====================================================
 chrome_opts = Options()
 if HEADLESS:
@@ -77,7 +89,6 @@ chrome_opts.add_argument("--disable-dev-shm-usage")
 chrome_opts.add_argument("--window-size=1280,850")
 chrome_opts.add_argument("--blink-settings=imagesEnabled=false")
 chrome_opts.add_argument("--disable-extensions")
-chrome_opts.add_argument("--disable-software-rasterizer")
 chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
 chrome_opts.add_argument("--remote-debugging-port=9222")
 
@@ -87,224 +98,295 @@ except Exception as e:
     log.error(f"❌ Chrome 실행 실패: {e}")
     sys.exit(1)
 
+
 # =====================================================
-# 1️⃣ 로그인 & 쿠키 수집
+# 로그인
 # =====================================================
 def selenium_login(driver):
-    log.info("[*] 로그인 시도 중 ...")
-    url = urljoin(BASE_URL, LOGIN_PAGE)
-    driver.get(url)
+    log.info("[*] 로그인 시도 중...")
+    driver.get(urljoin(BASE_URL, LOGIN_PAGE))
     time.sleep(2)
 
     try:
-        enterprise_radio = driver.find_element(By.ID, "enterprise-users")
-        driver.execute_script("arguments[0].click();", enterprise_radio)
-        time.sleep(0.5)
-    except Exception:
-        log.warning("⚠️ 기업 사용자 라디오버튼을 찾지 못했습니다. 기본 사용자로 진행합니다.")
+        radio = driver.find_element(By.ID, "enterprise-users")
+        driver.execute_script("arguments[0].click();", radio)
+    except:
+        pass
 
     id_input = driver.find_element(By.XPATH, "//input[@type='text']")
     pw_input = driver.find_element(By.XPATH, "//input[@type='password']")
-    id_input.clear()
     id_input.send_keys(USERNAME)
-    pw_input.clear()
     pw_input.send_keys(PASSWORD)
 
-    login_btn = driver.find_element(By.XPATH, "//button[contains(text(),'로그인')]")
-    driver.execute_script("arguments[0].click();", login_btn)
-    time.sleep(3)
+    btn = driver.find_element(By.XPATH, "//button[contains(text(),'로그인')]")
+    driver.execute_script("arguments[0].click();", btn)
+    time.sleep(2)
 
     cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
-    log.info("[*] 로그인 완료. 주요 쿠키:")
-    for k in ("XSRF-TOKEN", "SESSION", "account_id", "account_type"):
-        if k in cookies:
-            log.info(f"   {k}={cookies[k][:40]}...")
     return cookies
 
+
 # =====================================================
-# 2️⃣ Session 생성
+# Session
 # =====================================================
 def make_requests_session(cookies):
     sess = requests.Session()
-    xsrf = cookies.get("XSRF-TOKEN")
     sess.headers.update({
-        "accept": "application/json, text/plain, */*",
+        "accept": "application/json",
         "user-agent": "Mozilla/5.0",
-        "referer": BASE_URL,
         "origin": BASE_URL,
-        "x-xsrf-token": xsrf,
+        "referer": BASE_URL,
+        "x-xsrf-token": cookies.get("XSRF-TOKEN")
     })
-    for name, value in cookies.items():
-        sess.cookies.set(name, value, domain="bigfinance.co.kr", path="/")
+    for k, v in cookies.items():
+        sess.cookies.set(k, v, domain="bigfinance.co.kr", path="/")
     return sess
 
+
 # =====================================================
-# 3️⃣ API 호출
+# 산업 카테고리 API
 # =====================================================
 def fetch_api(sess, path):
     url = urljoin(BASE_URL, path)
-    resp = sess.get(url, verify=False, timeout=30)
-    log.info(f"[*] GET {url} → {resp.status_code}")
-    if resp.status_code == 200:
-        return resp.json()
-    else:
-        log.error(f"❌ API 실패: {resp.text[:200]}")
-        return None
+    r = sess.get(url, verify=False, timeout=30)
+    return r.json() if r.status_code == 200 else None
+
 
 # =====================================================
-# 4️⃣ JSON 평탄화
+# CSV 평탄화
 # =====================================================
-def flatten_categories(json_data):
+def flatten_categories(data):
     rows = []
-    categories = json_data.get("categories", [])
-    for main in categories:
-        main_code = main.get("code")
-        main_name = main.get("name")
+    for main in data.get("categories", []):
         for group in main.get("groups", []):
-            group_id = group.get("groupId")
-            group_name = group.get("groupName")
             for sub in group.get("subCategories", []):
-                sub_code = sub.get("subCode")
-                sub_name = sub.get("subName")
-                update_date = sub.get("updateDate")
-                data_type = sub.get("industryDataType")
                 for cat in sub.get("dataCategories", []):
                     rows.append({
-                        "main_code": main_code,
-                        "main_name": main_name,
-                        "group_id": group_id,
-                        "group_name": group_name,
-                        "sub_code": sub_code,
-                        "sub_name": sub_name,
-                        "update_date": update_date,
-                        "data_type": data_type,
+                        "main_code": main.get("code"),
+                        "main_name": main.get("name"),
+                        "group_id": group.get("groupId"),
+                        "group_name": group.get("groupName"),
+                        "sub_code": sub.get("subCode"),
+                        "sub_name": sub.get("subName"),
+                        "update_date": sub.get("updateDate"),
+                        "data_type": sub.get("industryDataType"),
                         "data_code": cat.get("dataCode"),
                         "data_name": cat.get("dataName"),
-                        "last_update": cat.get("lastUpdateDatetime"),
+                        "last_update": cat.get("lastUpdateDatetime")
                     })
     return rows
 
+
 def save_to_csv(rows, out_path):
-    if not rows:
-        log.warning("❗ 저장할 데이터가 없습니다.")
-        return False
-    with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-    log.info(f"✅ 1차 CSV 저장 완료: {out_path} ({len(rows)} rows)")
-    return True
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=rows[0].keys())
+        w.writeheader()
+        w.writerows(rows)
+
 
 # =====================================================
-# 5️⃣ header + companies 병합
+# header + companies
 # =====================================================
-def safe_get_json(sess, url, retries=3, timeout=(5,25)):
-    for attempt in range(retries):
+def safe_get_json(sess, url):
+    for _ in range(3):
         try:
-            resp = sess.get(url, timeout=timeout, verify=False)
-            if resp.status_code == 200:
-                return resp.json()
-        except Exception:
+            r = sess.get(url, verify=False, timeout=20)
+            if r.status_code == 200:
+                return r.json()
+        except:
             pass
-        time.sleep(1 + attempt + random.random())
+        time.sleep(1)
     return None
 
+
 def fetch_header_meta(sess, main_code, sub_code):
-    url = f"{BASE_URL}/api/industry/header/codes/{main_code}/subCodes/{sub_code}"
-    data = safe_get_json(sess, url)
-    if not isinstance(data, dict):
-        return {"frequency": None, "unit": None, "source": None, "footnote": None, "yoyFlag": None, "updateDate": None}
-    return {
-        "frequency": data.get("frequency"),
-        "unit": data.get("unit"),
-        "source": data.get("source"),
-        "footnote": data.get("footnote"),
-        "yoyFlag": data.get("yoyFlag"),
-        "updateDate": data.get("updateDate"),
-    }
+    u = f"{BASE_URL}/api/industry/header/codes/{main_code}/subCodes/{sub_code}"
+    d = safe_get_json(sess, u)
+    return d if isinstance(d, dict) else {}
+
 
 def fetch_companies(sess, main_code, sub_code):
-    url = f"{BASE_URL}/api/industry/codes/{main_code}/subCodes/{sub_code}/companies"
-    data = safe_get_json(sess, url)
-    if not data:
-        return []
-    if isinstance(data, list):
-        return [{"code": d.get("companyCode"), "name": d.get("companyName")} for d in data if isinstance(d, dict)]
-    elif isinstance(data, dict) and "companies" in data:
-        return [{"code": d.get("companyCode"), "name": d.get("companyName")} for d in data["companies"] if isinstance(d, dict)]
+    u = f"{BASE_URL}/api/industry/codes/{main_code}/subCodes/{sub_code}/companies"
+    d = safe_get_json(sess, u)
+    if isinstance(d, list):
+        return [{"code": x.get("companyCode"), "name": x.get("companyName")} for x in d]
+    if isinstance(d, dict) and "companies" in d:
+        return [{"code": x.get("companyCode"), "name": x.get("companyName")} for x in d["companies"]]
     return []
 
-def enrich_with_meta(sess, csv_path, out_path, max_workers=4):
+
+def enrich_with_meta(sess, csv_path, out_path):
     df = pd.read_csv(csv_path)
-    for col in ["frequency", "unit", "source", "footnote", "yoyFlag", "updateDate", "companies"]:
-        df[col] = None
+    pairs = df.groupby(["main_code", "sub_code"]).size().index.tolist()
 
-    sub_map = df.groupby(["main_code", "sub_code"]).size().index.tolist()
-    cache_header, cache_companies = {}, {}
+    cache_header = {}
+    cache_comp = {}
 
-    def task(main_code, sub_code):
-        meta = fetch_header_meta(sess, main_code, sub_code)
-        comps = fetch_companies(sess, main_code, sub_code)
-        cache_header[(main_code, sub_code)] = meta
-        cache_companies[(main_code, sub_code)] = comps
-        time.sleep(random.uniform(0.3, 1.0))
-        return (main_code, sub_code)
+    def job(a, b):
+        cache_header[(a, b)] = fetch_header_meta(sess, a, b)
+        cache_comp[(a, b)] = fetch_companies(sess, a, b)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = [ex.submit(task, m, s) for (m, s) in sub_map]
-        for fut in tqdm(as_completed(futures), total=len(futures), ncols=90, desc="header+companies 수집 중"):
-            try:
-                fut.result()
-            except Exception as e:
-                log.error(f"[ERR] {e}")
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(job, a, b) for (a, b) in pairs]
+        for _ in tqdm(as_completed(futures), total=len(futures), ncols=90, desc="header+companies"):
+            pass
 
-    for i, row in df.iterrows():
-        key = (row["main_code"], row["sub_code"])
-        meta = cache_header.get(key, {})
-        comps = cache_companies.get(key, [])
-        if meta:
-            for k, v in meta.items():
-                df.at[i, k] = v
-        df.at[i, "companies"] = json.dumps(comps, ensure_ascii=False)
+    for idx, r in df.iterrows():
+        k = (r["main_code"], r["sub_code"])
+        for k2, v2 in cache_header.get(k, {}).items():
+            df.at[idx, k2] = v2
+        df.at[idx, "companies"] = json.dumps(cache_comp.get(k, []), ensure_ascii=False)
 
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    log.info(f"✅ 최종 CSV 저장 완료: {out_path} (총 {len(df)}행)")
+
 
 # =====================================================
-# 6️⃣ 메인 실행
+# sanitize filename
+# =====================================================
+def sanitize_filename(text):
+    if pd.isna(text):
+        return "unknown"
+    t = str(text).replace(" ", "_")
+    for b in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+        t = t.replace(b, "")
+    return t
+
+
+# =====================================================
+# chart JSON 다운로드
+# =====================================================
+def fetch_chart_json(sess, main_code, group_id, sub_code,
+                     data_code, data_type, sub_name, data_name):
+
+    url = f"{BASE_URL}/api/industry/chart/codes/{main_code}/subCodes/{sub_code}?dataCode={data_code}"
+
+    try:
+        r = sess.get(url, verify=False, timeout=20)
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+
+        safe_type = sanitize_filename(data_type)
+        safe_sub = sanitize_filename(sub_name)
+        safe_name = sanitize_filename(data_name)
+
+        out_dir = OUT_DIR / safe_type / str(main_code) / str(group_id) / str(sub_code)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = out_dir / f"{data_code}-{safe_sub}-{safe_name}.json"
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return out_path
+
+    except:
+        return None
+
+
+# =====================================================
+# chart manifest + index 저장
+# =====================================================
+def build_chart_manifest(items):
+    manifest = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_items": len(items),
+        "items": items
+    }
+
+    # JSON
+    with open(CHART_META_DIR / "chart_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    # CSV
+    pd.DataFrame(items).to_csv(
+        CHART_META_DIR / "chart_index.csv",
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    log.info("📁 chart manifest + index 저장 완료")
+
+
+# =====================================================
+# chart 병렬 다운로드
+# =====================================================
+def download_all_charts(sess, csv_path, max_workers=6):
+    df = pd.read_csv(csv_path)
+
+    tasks = []
+    for _, r in df.iterrows():
+        tasks.append((
+            r["main_code"], r["group_id"], r["sub_code"],
+            r["data_code"], r["data_type"],
+            r["sub_name"], r["data_name"],
+            r["update_date"]
+        ))
+
+    index_items = []
+
+    def work(t):
+        (main_code, group_id, sub_code,
+         data_code, data_type,
+         sub_name, data_name,
+         update_date) = t
+
+        out_path = fetch_chart_json(
+            sess, main_code, group_id, sub_code,
+            data_code, data_type, sub_name, data_name
+        )
+
+        if out_path:
+            # 상대경로 변환 (핵심!)
+            rel_path = f"./{out_path.relative_to(BASE_DIR)}"
+
+            index_items.append({
+                "data_type": data_type,
+                "main_code": main_code,
+                "group_id": group_id,
+                "sub_code": sub_code,
+                "data_code": data_code,
+                "sub_name": sanitize_filename(sub_name),
+                "data_name": sanitize_filename(data_name),
+                "file_path": rel_path,
+                "update_date": update_date
+            })
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(work, t) for t in tasks]
+        for _ in tqdm(as_completed(futures), total=len(futures), ncols=90, desc="chart 수집"):
+            pass
+
+    build_chart_manifest(index_items)
+
+
+# =====================================================
+# main
 # =====================================================
 def main():
     try:
-        log.info("[*] BigFinance 로그인 중 ...")
         cookies = selenium_login(driver)
         sess = make_requests_session(cookies)
 
-        log.info("[*] 산업 카테고리 데이터 수집 중 ...")
         data = fetch_api(sess, API_PATH)
-        if not data:
-            log.error("❌ API 응답 없음. 종료합니다.")
-            sys.exit(1)
-
         rows = flatten_categories(data)
-        if not save_to_csv(rows, CSV_FILE):
-            sys.exit(1)
+        save_to_csv(rows, CSV_FILE)
 
-        log.info("[*] header + companies 병합 중 ...")
-        enrich_with_meta(sess, CSV_FILE, OUT_FILE, max_workers=4)
+        enrich_with_meta(sess, CSV_FILE, OUT_FILE)
 
-        if KEEP_TEMP:
-            log.info(f"🗂 중간 파일 보존 (.env KEEP_TEMP=true): {CSV_FILE.name}")
-        else:
-            if CSV_FILE.exists():
-                CSV_FILE.unlink()
-                log.info(f"🧹 중간 파일 삭제 완료: {CSV_FILE.name}")
+        download_all_charts(sess, OUT_FILE, max_workers=6)
+
+        if not KEEP_TEMP and CSV_FILE.exists():
+            CSV_FILE.unlink()
 
     except Exception as e:
-        log.exception(f"❌ 실행 중 오류 발생: {e}")
-        sys.exit(1)
+        log.exception(f"❌ 오류 발생: {e}")
+
     finally:
         driver.quit()
-        log.info("[*] Chrome 세션 종료 완료")
+        log.info("[*] Chrome 세션 종료")
+
 
 if __name__ == "__main__":
     main()
